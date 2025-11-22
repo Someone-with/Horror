@@ -1,1 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Haunted Eternity</title>
+  <style>
+    body { margin:0; background:#000; color:#700; font-family:monospace; overflow:hidden; }
+    canvas { image-rendering: pixelated; }
+    #ui { position:absolute; top:10px; left:10px; background:rgba(0,0,0,0.7); padding:10px; border:2px solid #400; }
+    button { background:#400; color:#fff; border:none; padding:8px; margin:5px; cursor:pointer; }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="ui">
+    <div>Haunted Eternity</div>
+    <button onclick="startGame()">New Game</button>
+    <button onclick="toggleLogging()">Logging: <span id="logStatus">ON</span></button>
+    <div id="stats"></div>
+  </div>
 
+  <script src="game.js"></script>
+</body>
+</html>
