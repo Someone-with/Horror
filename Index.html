@@ -2,24 +2,255 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
   <title>Haunted Eternity</title>
   <style>
-    body { margin:0; background:#000; color:#700; font-family:monospace; overflow:hidden; }
-    canvas { image-rendering: pixelated; }
-    #ui { position:absolute; top:10px; left:10px; background:rgba(0,0,0,0.7); padding:10px; border:2px solid #400; }
-    button { background:#400; color:#fff; border:none; padding:8px; margin:5px; cursor:pointer; }
+    body { margin:0; background:#000; color:#700; font-family:monospace; overflow:hidden; touch-action:manipulation; }
+    canvas { image-rendering: pixelated; display:block; background:#000; }
+    #ui, #mobileControls { position:absolute; color:#fff; }
+    #ui { top:10px; left:10px; background:rgba(0,0,0,0.8); padding:15px; border:2px solid #400; border-radius:8px; max-width:340px; z-index:10; }
+    button { background:#400; color:#fff; border:none; padding:10px 14px; margin:5px; cursor:pointer; border-radius:5px; font-family:monospace; }
+    button:hover, button:active { background:#600; }
+    #stats { margin-top:10px; font-size:13px; line-height:1.4; }
+    #mobileControls {
+      bottom:0; left:0; width:100%; height:180px; pointer-events:none; display:none;
+      background:linear-gradient(transparent, rgba(0,0,0,0.7));
+    }
+    .joy { position:absolute; width:120px; height:120px; background:rgba(255,255,255,0.15); border:3px solid #0ff; border-radius:50%; pointer-events:all; }
+    .btn { position:absolute; width:80px; height:80px; background:rgba(255,0,255,0.3); border:3px solid #f0f; border-radius:50%; pointer-events:all; display:flex; align-items:center; justify-content:center; font-size:10px; text-align:center; }
+    #instructions { position:absolute; bottom:10px; left:10px; color:#aaa; font-size:11px; max-width:500px; z-index:10; }
+    @media (max-width: 900px) { #mobileControls { display:block; } #instructions { display:none; } }
   </style>
 </head>
 <body>
   <canvas id="game"></canvas>
+
   <div id="ui">
-    <div>Haunted Eternity</div>
+    <div style="font-size:19px; font-weight:bold; margin-bottom:8px;">Haunted Eternity</div>
     <button onclick="startGame()">New Game</button>
     <button onclick="toggleLogging()">Logging: <span id="logStatus">ON</span></button>
-    <div id="stats"></div>
+    <div id="stats">Click New Game to descend...</div>
   </div>
 
-  <script src="game.js"></script>
+  <div id="instructions">
+    PC: WASD = move • 1=STR 2=SAN 3=LCK 4=PER | Mobile: use joystick + stat buttons
+  </div>
+
+  <!-- Mobile Controls -->
+  <div id="mobileControls">
+    <div id="joystick" class="joy" style="left:40px; bottom:30px;"></div>
+    <div id="btnSTR" class="btn" style="right:180px; bottom:80px;">STR<br>+HP</div>
+    <div id="btnSAN" class="btn" style="right:90px; bottom:100px;">SAN<br>+Sanity</div>
+    <div id="btnLCK" class="btn" style="right:30px; bottom:70px;">LCK<br>Less<br>Ambush</div>
+    <div id="btnPER" class="btn" style="right:100px; bottom:30px;">PER<br>+EXP</div>
+  </div>
+
+  <script>
+    // YOUR WEBHOOK
+    const WEBHOOK_URL = 'https://discord.com/api/webhooks/1441612281468289074/s7gH8ncUbe2FkIkOATH_M9kxWUQTlk-LMqUaq0g9INSiPGoUqiWMybIxhRxVgqLYh1Mt';
+
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    const TILE = Math.min(40, Math.floor(Math.min(canvas.width, canvas.height) / 20));
+    const WIDTH = Math.ceil(canvas.width / TILE);
+    const HEIGHT = Math.ceil(canvas.height / TILE);
+
+    let player = null;
+    let floor = [];
+    let logsEnabled = localStorage.getItem('loggingEnabled') !== 'false';
+    document.getElementById('logStatus').textContent = logsEnabled ? 'ON' : 'OFF';
+    let gameRunning = false;
+    let keys = {};
+    let touchMove = {x:0, y:0};
+
+    // === LOGGING ===
+    function logToDiscord(title, desc = '', fields = {}, color = 0x8B0000) {
+      if (!logsEnabled || !WEBHOOK_URL) return;
+      const name = localStorage.getItem('playerName') || 'Lost Soul';
+      const sess = localStorage.getItem('sessionID')?.slice(0,8) || '????';
+      const embed = {
+        title: `${title}`,
+        description: desc,
+        color: color,
+        fields: [{name:'Player',value:`\`\`\`${name}\`\`\``,inline:true},{name:'Session',value:`\`\`\`${sess}\`\`\``,inline:true},
+                 ...Object.entries(fields).map(([k,v])=>({name:k,value:`\`\`\`${v}\`\`\``,inline:true}))],
+        timestamp: new Date().toISOString(),
+        footer: { text: 'Haunted Eternity Mobile+PC' }
+      };
+      fetch(WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({embeds:[embed]})}).catch(()=>{});
+    }
+
+    function toggleLogging() {
+      logsEnabled = !logsEnabled;
+      document.getElementById('logStatus').textContent = logsEnabled ? 'ON' : 'OFF';
+      localStorage.setItem('loggingEnabled', logsEnabled);
+    }
+
+    // === PLAYER ===
+    class Player {
+      constructor() {
+        this.name = localStorage.getItem('playerName') || prompt('Your name, wanderer?') || 'Lost Soul';
+        localStorage.setItem('playerName', this.name);
+        this.resetStats();
+      }
+      resetStats() {
+        this.level = parseInt(localStorage.getItem('ngLevel')||'1');
+        this.exp = 0; this.statPoints = 0;
+        this.str = 5 + (this.level-1)*2;
+        this.san = 10 + (this.level-1);
+        this.luck = 5 + (this.level-1);
+        this.per = 5 + (this.level-1);
+        this.hp = this.maxHp = 30 + this.str*4;
+        this.sanity = 100 + this.san*6;
+        this.depth = 1;
+        this.deepest = parseInt(localStorage.getItem('deepest')||'0');
+        this.totalDeaths = parseInt(localStorage.getItem('deaths')||'0');
+      }
+      levelUp() {
+        this.level++; this.statPoints += 5;
+        this.maxHp += 12 + this.str; this.hp = this.maxHp;
+        localStorage.setItem('ngLevel', this.level);
+        logToDiscord('Level Up!', `${this.name} → Lv.${this.level}`, {Depth:this.depth, Points:this.statPoints}, 0xFFD700);
+      }
+    }
+
+    // === MAP ===
+    function generateFloor() {
+      floor = new Array(WIDTH*HEIGHT).fill(1);
+      for(let y=1;y<6;y++) for(let x=1;x<8;x++) floor[y*WIDTH+x]=0;
+      for(let y=HEIGHT-6;y<HEIGHT-1;y++) for(let x=WIDTH-8;x<WIDTH-1;x++) floor[y*WIDTH+x]=0;
+      floor[(HEIGHT-4)*WIDTH + (WIDTH-4)] = 3; // stairs
+      for(let i=0;i<15;i++){
+        const rx=2+Math.random()*(WIDTH-10)|0, ry=2+Math.random()*(HEIGHT-10)|0;
+        const rw=4+Math.random()*6|0, rh=4+Math.random()*6|0;
+        for(let y=ry;y<ry+rh;y++) for(let x=rx;x<rx+rw;x++) if(x<WIDTH&&y<HEIGHT) floor[y*WIDTH+x]=0;
+      }
+      player.x = 4; player.y = 3;
+    }
+
+    function startGame() {
+      player = new Player();
+      localStorage.setItem('sessionID', crypto.randomUUID());
+      generateFloor();
+      gameRunning = true;
+      logToDiscord('New Soul Entered', `${player.name} entered (Mobile+PC build)`, {Level:player.level, Platform: /Mobi|Android|iPhone|iPad/.test(navigator.userAgent) ? 'Mobile' : 'Desktop'}, 0x00FFFF);
+      gameLoop();
+    }
+
+    // === DRAW ===
+    function draw() {
+      ctx.fillStyle = '#000'; ctx.fillRect(0,0,canvas.width,canvas.height);
+      for(let y=0;y<HEIGHT;y++) for(let x=0;x<WIDTH;x++) {
+        const t = floor[y*WIDTH+x];
+        if(t===1) { ctx.fillStyle='#422'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); }
+        if(t===0) { ctx.fillStyle='#111'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); }
+        if(t===3) { ctx.fillStyle='#050'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE);
+                    ctx.fillStyle='#0f0'; ctx.fillRect(x*TILE+10,y*TILE+10,TILE-20,TILE-20); }
+      }
+      const pc = player.sanity > 50 ? '#0ff' : player.sanity > 20 ? '#ff0' : '#f00';
+      ctx.fillStyle = pc;
+      ctx.fillRect(player.x*TILE+6, player.y*TILE+6, TILE-12, TILE-12);
+
+      document.getElementById('stats').innerHTML = `
+        <b>${player.name}</b> • Lv.${player.level} • Depth ${player.depth} (Best ${player.deepest})<br>
+        ❤️ ${player.hp}/${player.maxHp} • 🧠 ${player.sanity|0}<br>
+        💪${player.str} 🧠${player.san} 🍀${player.luck} 👁️${player.per} • ⭐${player.statPoints} pts<br>
+        EXP ${player.exp|0}/${player.level*50}
+      `;
+    }
+
+    // === UPDATE ===
+    function update() {
+      if(!gameRunning) return;
+
+      // Keyboard
+      if(keys['w']||touchMove.y<0) player.y--;
+      if(keys['s']||touchMove.y>0) player.y++;
+      if(keys['a']||touchMove.x<0) player.x--;
+      if(keys['d']||touchMove.x>0) player.x++;
+
+      if(keys['w']||keys['a']||keys['s']||keys['d'] || touchMove.x||touchMove.y) {
+        if(floor[player.y*WIDTH + player.x] !== 1) {
+          player.exp += 0.6 + player.per/8;
+          if(player.exp >= player.level*50) player.levelUp();
+        } else { player.x -= touchMove.x||0; player.y -= touchMove.y||0; } // collision revert
+      }
+
+      // Stat buttons (mobile + PC 1-4)
+      if((keys['1']||touchSTR) && player.statPoints>0) { player.str++; player.maxHp+=5; player.hp=player.maxHp; player.statPoints--; }
+      if((keys['2']||touchSAN) && player.statPoints>0) { player.san++; player.sanity+=25; player.statPoints--; }
+      if((keys['3']||touchLCK) && player.statPoints>0) { player.luck++; player.statPoints--; }
+      if((keys['4']||touchPER) && player.statPoints>0) { player.per++; player.statPoints--; }
+
+      player.sanity -= 0.07;
+      if(player.sanity <= 0) { player.hp -= 3; player.sanity = 100 + player.san*6; 
+        logToDiscord('Sanity Break', `${player.name} shattered`, {}, 0x9400D3); }
+
+      if(Math.random() < (0.001 + player.depth*0.0005)/(1+player.luck/10)) {
+        const dmg = Math.max(1, 7 - player.str);
+        player.hp -= dmg;
+        logToDiscord('Ambushed!', `${player.name} hit for ${dmg}`, {Depth:player.depth}, 0xDC143C);
+      }
+
+      if(floor[player.y*WIDTH + player.x] === 3) {
+        player.depth++;
+        if(player.depth > player.deepest) { player.deepest = player.depth; localStorage.setItem('deepest',player.deepest); }
+        generateFloor();
+        logToDiscord('Descended', `→ Depth ${player.depth}`, {Deepest:player.deepest}, 0x00FF00);
+      }
+
+      if(player.hp <= 0) {
+        player.totalDeaths++;
+        localStorage.setItem('deaths', player.totalDeaths);
+        logToDiscord('Soul Claimed', `${player.name} perished forever`, {Depth:player.depth, Deaths:player.totalDeaths}, 0x8B0000);
+        alert(`You died at depth ${player.depth}...`);
+        gameRunning = false;
+      }
+
+      // reset one-press keys
+      keys['1']=keys['2']=keys['3']=keys['4']=false;
+      touchSTR=touchSAN=touchLCK=touchPER=false;
+    }
+
+    function gameLoop() {
+      update();
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+
+    // === INPUT ===
+    window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+    window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+
+    // Mobile joystick
+    let joyActive = false, joyX, joyY;
+    const joy = document.getElementById('joystick');
+    joy.addEventListener('touchstart', e=>{ e.preventDefault(); joyActive=true; });
+    joy.addEventListener('touchmove', e=>{
+      if(!joyActive) return;
+      e.preventDefault();
+      const rect = joy.getBoundingClientRect();
+      const tx = e.touches[0].clientX - rect.left - 60;
+      const ty = e.touches[0].clientY - rect.top - 60;
+      const dist = Math.hypot(tx,ty);
+      if(dist>50) { tx*=50/dist; ty*=50/dist; }
+      joy.style.transform = `translate(${tx}px, ${ty}px)`;
+      touchMove.x = tx/50; touchMove.y = ty/50;
+    });
+    joy.addEventListener('touchend', ()=>{ joyActive=false; joy.style.transform='translate(0,0)'; touchMove={x:0,y:0}; });
+
+    // Mobile stat buttons
+    let touchSTR=false, touchSAN=false, touchLCK=false, touchPER=false;
+    document.getElementById('btnSTR').ontouchstart = () => touchSTR = true;
+    document.getElementById('btnSAN').ontouchstart = () => touchSAN = true;
+    document.getElementById('btnLCK').ontouchstart = () => touchLCK = true;
+    document.getElementById('btnPER').ontouchstart = () => touchPER = true;
+
+    // Error logging
+    window.addEventListener('error', e => logToDiscord('CRASH', e.message, {File:e.filename}, 0xFF0000));
+  </script>
 </body>
 </html>
